@@ -2088,6 +2088,39 @@ static struct MainLoopData
 } mainLoopData = {0};
 
 
+void My_setPad(bool R, bool L, bool D, bool U, bool T, bool S, bool B, bool A, bool Y, bool X, bool W, bool E, bool G, bool F)
+{
+    UserInput& input = NDS_getProcessingUserInput();
+    input.buttons.R = R;
+    input.buttons.L = L;
+    input.buttons.D = D;
+    input.buttons.U = U;
+    input.buttons.T = T;
+    input.buttons.S = S;
+    input.buttons.B = B;
+    input.buttons.A = A;
+    input.buttons.Y = Y;
+    input.buttons.X = X;
+    input.buttons.W = W;
+    input.buttons.E = E;
+    input.buttons.G = G;
+    input.buttons.F = F;
+}
+void My_setTouchPos(u16 x, u16 y)
+{
+    UserInput& input = NDS_getProcessingUserInput();
+    input.touch.touchX = x << 4;
+    input.touch.touchY = y << 4;
+    input.touch.isTouch = true;
+}
+void My_releaseTouch(void)
+{
+    UserInput& input = NDS_getProcessingUserInput();
+    input.touch.touchX = 0;
+    input.touch.touchY = 0;
+    input.touch.isTouch = false;
+}
+
 static bool getinput()
 {
     static HANDLE mutex = 0;
@@ -2098,6 +2131,8 @@ static bool getinput()
     static bool pressed = false;
     static int reload_timer = 0;
     static int reload_timer_limit = 0;
+    static int touched_ticks = 0;
+    static int pressed_ticks = 0;
 
     if (reload_timer_limit == 0 || (reload_timer != 0 && (GetTickCount() - reload_timer) > reload_timer_limit))
     {
@@ -2119,24 +2154,23 @@ static bool getinput()
 
     if (mutex && keys)
     {
-        KeyPress keycopy;
-        if (shared_mutex_enter(mutex))
+        //if (shared_mutex_enter(mutex))
         {
             // do reload check
             if (keys->require_reload)
             {
                 if (touched)
                 {
-                    NDS_releaseTouch();
+                    My_releaseTouch();
                     touched = false;
                 }
                 if (pressed)
                 {
-                    NDS_setPad(false, false, false, false, false, false, false, false, false, false, false, false, false, false);
+                    My_setPad(false, false, false, false, false, false, false, false, false, false, false, false, false, false);
                     pressed = false;
                 }
                 keys->ready_for_quit = 1;
-                shared_mutex_exit(mutex);
+                //shared_mutex_exit(mutex);
                 shared_mutex_close(mutex);
                 close_shared_mem(memhandle, keys);
                 mutex = keys = 0;
@@ -2145,32 +2179,34 @@ static bool getinput()
                 printf("reloading....\n");
                 return false;
             }
+            //keycopy = *keys;
+            //shared_mutex_exit(mutex);
 
-            keycopy = *keys;
-            shared_mutex_exit(mutex);
-
-            if (touched)
+            // whats a race condition?
+            if (!keys->is_active && touched && touched_ticks==0)
             {
-                NDS_releaseTouch();
+                My_releaseTouch();
                 touched = false;
             }
-            else if (keycopy.is_active && keycopy.cmd == XNYN)
+            else if (touched_ticks > 0 || (keys->is_active && keys->cmd == XNYN))
             {
-                NDS_setTouchPos(keycopy.x, keycopy.y);
-                touched = true;
-                // update the original variable
                 keys->is_active = false;
+                My_setTouchPos(keys->x, keys->y);
+                touched = true;
+                if (touched_ticks==0) touched_ticks = 2;
+                else touched_ticks--;
             }
 
-            if (pressed)
+            if (!keys->is_active && pressed && pressed_ticks==0)
             {
-                NDS_setPad(false, false, false, false, false, false, false, false, false, false, false, false, false, false);
+                My_setPad(false, false, false, false, false, false, false, false, false, false, false, false, false, false);
                 pressed = false;
             }
-            else if (keycopy.is_active && keycopy.cmd != XNYN)
+            else if (pressed_ticks > 0 || (keys->is_active && keys->cmd != XNYN))
             {
+                keys->is_active = false;
                 bool up = false, down = false, left = false, right = false, l = false, r = false, a = false, b = false, x = false, y = false, start = false, select = false;
-                switch (keycopy.cmd)
+                switch (keys->cmd)
                 {
                 case UP:  up = true; break;
                 case DOWN:down = true; break;
@@ -2185,10 +2221,10 @@ static bool getinput()
                 case START:start = true; break;
                 case SELECT:select = true; break;
                 }
-                NDS_setPad(right, left, down, up, select, start, b, a, y, x, l, r, false, false);
+                My_setPad(right, left, down, up, select, start, b, a, y, x, l, r, false, false);
                 pressed = true;
-                // update the original variable
-                keys->is_active = false;
+                if (pressed_ticks == 0)  pressed_ticks = 2; 
+                else pressed_ticks--;
             }
         }
 
@@ -2198,13 +2234,13 @@ static bool getinput()
 static void StepRunLoop_Core()
 {
 	input_acquire();
-    getinput();
 	NDS_beginProcessingInput();
 	{
 		input_process();
 		FCEUMOV_HandlePlayback();
 		CallRegisteredLuaFunctions(LUACALL_BEFOREEMULATION);
 	}
+    getinput();
 	NDS_endProcessingInput();
 	FCEUMOV_HandleRecording();
 
