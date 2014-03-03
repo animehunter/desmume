@@ -110,6 +110,9 @@
 #include "soundView.h"
 #include "importSave.h"
 #include "fsnitroView.h"
+
+#include "utils.h"
+
 //
 //static size_t heapram = 0;
 //void* operator new[](size_t amt)
@@ -2085,9 +2088,117 @@ static struct MainLoopData
 } mainLoopData = {0};
 
 
+static bool getinput()
+{
+    static HANDLE mutex = 0;
+    static HANDLE memhandle = 0;
+    static KeyPress *keys = 0;
+
+    static bool touched = false;
+    static bool pressed = false;
+    static int reload_timer = 0;
+    static int reload_timer_limit = 0;
+
+    if (reload_timer_limit == 0 || (reload_timer != 0 && (GetTickCount() - reload_timer) > reload_timer_limit))
+    {
+        if (!keys)
+        {
+            keys = (KeyPress*)open_shared_mem(APP_KEY_MEM, sizeof(KeyPress), &memhandle);
+        }
+        if (!mutex)
+        {
+            mutex = shared_mutex_open(APP_KEY_MUTEX);
+        }
+        if (mutex && keys)
+        {
+            reload_timer = 0;
+            reload_timer_limit = 3000;
+            printf("Shared mem ready\n");
+        }
+    }
+
+    if (mutex && keys)
+    {
+        KeyPress keycopy;
+        if (shared_mutex_enter(mutex))
+        {
+            // do reload check
+            if (keys->require_reload)
+            {
+                if (touched)
+                {
+                    NDS_releaseTouch();
+                    touched = false;
+                }
+                if (pressed)
+                {
+                    NDS_setPad(false, false, false, false, false, false, false, false, false, false, false, false, false, false);
+                    pressed = false;
+                }
+                keys->ready_for_quit = 1;
+                shared_mutex_exit(mutex);
+                shared_mutex_close(mutex);
+                close_shared_mem(memhandle, keys);
+                mutex = keys = 0;
+                reload_timer_limit = 3000;
+                reload_timer = GetTickCount();
+                printf("reloading....\n");
+                return false;
+            }
+
+            keycopy = *keys;
+            shared_mutex_exit(mutex);
+
+            if (touched)
+            {
+                NDS_releaseTouch();
+                touched = false;
+            }
+            else if (keycopy.is_active && keycopy.cmd == XNYN)
+            {
+                NDS_setTouchPos(keycopy.x, keycopy.y);
+                touched = true;
+                // update the original variable
+                keys->is_active = false;
+            }
+
+            if (pressed)
+            {
+                NDS_setPad(false, false, false, false, false, false, false, false, false, false, false, false, false, false);
+                pressed = false;
+            }
+            else if (keycopy.is_active && keycopy.cmd != XNYN)
+            {
+                bool up = false, down = false, left = false, right = false, l = false, r = false, a = false, b = false, x = false, y = false, start = false, select = false;
+                switch (keycopy.cmd)
+                {
+                case UP:  up = true; break;
+                case DOWN:down = true; break;
+                case LEFT:left = true; break;
+                case RIGHT:right = true; break;
+                case L:l = true; break;
+                case R:r = true; break;
+                case A:a = true; break;
+                case B:b = true; break;
+                case X:x = true; break;
+                case Y:y = true; break;
+                case START:start = true; break;
+                case SELECT:select = true; break;
+                }
+                NDS_setPad(right, left, down, up, select, start, b, a, y, x, l, r, false, false);
+                pressed = true;
+                // update the original variable
+                keys->is_active = false;
+            }
+        }
+
+    }
+    return true;
+}
 static void StepRunLoop_Core()
 {
 	input_acquire();
+    getinput();
 	NDS_beginProcessingInput();
 	{
 		input_process();
